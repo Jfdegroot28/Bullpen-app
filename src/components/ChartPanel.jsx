@@ -10,7 +10,6 @@ const CATS = {
   competitive: { label: 'Competitive Miss', short: 'CM', rgb: [250, 204, 21] },
   notComp:     { label: 'Not Competitive',  short: 'NC', rgb: [239, 68, 68]  },
 }
-const PITCH_TYPES = ['FB', 'CT', 'SL', 'CH']
 
 function kernel(x, y, px, py, bw) {
   const dx = (x - px) / bw, dy = (y - py) / bw
@@ -83,7 +82,7 @@ function drawCanvas(canvas, pitches, filter, showDots, line1, line2) {
   ctx.fillText(line2, CW/2, 55)
 }
 
-export default function ChartPanel({ pitcher }) {
+export default function ChartPanel({ pitcher, onUpdatePitcher }) {
   const canvasRef = useRef(null)
   const channelRef = useRef(null)
   const [sessions, setSessions]     = useState([])
@@ -91,15 +90,27 @@ export default function ChartPanel({ pitcher }) {
   const [allPitches, setAllPitches] = useState([])
   const [activeSessionId, setActiveSessionId] = useState(null)
   const [selCat, setSelCat]   = useState('executed')
-  const [selType, setSelType] = useState('FB')
+  const [selType, setSelType] = useState(null)
   const [filter, setFilter]   = useState('All')
   const [showDots, setShowDots] = useState(true)
   const [loading, setLoading] = useState(true)
   const [editingSession, setEditingSession] = useState(null)
   const [editingVal, setEditingVal] = useState('')
+  const [editingPitchTypes, setEditingPitchTypes] = useState(false)
+  const [pitchTypesInput, setPitchTypesInput] = useState('')
 
+  const pitchTypes = pitcher?.pitch_types || ['FB', 'CT', 'SL', 'CH']
   const isTotal = activeSessionId === null
   const displayPitches = isTotal ? allPitches : pitches
+
+  // Set default selType when pitcher changes
+  useEffect(() => {
+    if (pitcher && pitcher.pitch_types && pitcher.pitch_types.length > 0) {
+      setSelType(pitcher.pitch_types[0])
+    } else {
+      setSelType('FB')
+    }
+  }, [pitcher?.id])
 
   useEffect(() => {
     if (!pitcher) return
@@ -149,7 +160,7 @@ export default function ChartPanel({ pitcher }) {
   }, [displayPitches, filter, showDots, pitcher, activeSessionId, sessions, isTotal])
 
   const handleCanvasClick = async (e) => {
-    if (isTotal || !activeSessionId) return
+    if (isTotal || !activeSessionId || !selType) return
     const canvas = canvasRef.current
     const rect = canvas.getBoundingClientRect()
     const x = (e.clientX - rect.left) * (CW / rect.width)
@@ -198,6 +209,16 @@ export default function ChartPanel({ pitcher }) {
     setSessions(prev => prev.map(s => s.id === id ? { ...s, name: name.trim() } : s))
   }
 
+  const savePitchTypes = async () => {
+    const types = pitchTypesInput.split(',').map(t => t.trim().toUpperCase()).filter(t => t.length > 0)
+    if (types.length === 0) return
+    const { data, error } = await supabase.from('pitchers').update({ pitch_types: types }).eq('id', pitcher.id).select().single()
+    if (error) { console.error(error); return }
+    onUpdatePitcher(data)
+    setSelType(types[0])
+    setEditingPitchTypes(false)
+  }
+
   const total = displayPitches.length
 
   if (!pitcher) return (
@@ -212,6 +233,7 @@ export default function ChartPanel({ pitcher }) {
         <h1 style={{ fontSize: '20px', fontWeight: 'bold', letterSpacing: '2px', margin: 0 }}>{pitcher.name}</h1>
         <div style={{ fontSize: '11px', color: '#475569', marginTop: '3px' }}>{pitcher.hand}</div>
       </div>
+
       <div style={{ display: 'flex', alignItems: 'center', gap: '4px', flexWrap: 'wrap', justifyContent: 'center', marginBottom: '16px', maxWidth: '860px' }}>
         <button onClick={() => { setActiveSessionId(null); setFilter('All') }}
           style={{ padding: '7px 16px', borderRadius: '8px', cursor: 'pointer', fontSize: '11px', fontWeight: 'bold', letterSpacing: '1px', border: 'none', background: isTotal ? 'linear-gradient(135deg,#6366f1,#8b5cf6)' : 'rgba(99,102,241,0.12)', color: isTotal ? 'white' : '#94a3b8', boxShadow: isTotal ? '0 0 16px rgba(99,102,241,0.4)' : 'none' }}>
@@ -240,14 +262,43 @@ export default function ChartPanel({ pitcher }) {
           + Session
         </button>
       </div>
+
       {isTotal && <div style={{ fontSize: '10px', color: '#6366f1', marginBottom: '10px', letterSpacing: '1px' }}>⬡ AGGREGATE — {sessions.length} SESSION{sessions.length !== 1 ? 'S' : ''} · READ ONLY</div>}
+
       <div style={{ display: 'flex', gap: '20px', flexWrap: 'wrap', justifyContent: 'center', alignItems: 'flex-start' }}>
         <div style={{ width: '160px' }}>
-          <Sec label="PITCH TYPE">{PITCH_TYPES.map(pt => <CBtn key={pt} active={selType===pt} onClick={() => setSelType(pt)} color="#3b82f6" disabled={isTotal}>{pt}</CBtn>)}</Sec>
+
+          <Sec label="PITCH TYPE">
+            {pitchTypes.map(pt => <CBtn key={pt} active={selType===pt} onClick={() => setSelType(pt)} color="#3b82f6" disabled={isTotal}>{pt}</CBtn>)}
+            {!isTotal && (
+              editingPitchTypes ? (
+                <div style={{ marginTop: '6px' }}>
+                  <div style={{ fontSize: '9px', color: '#64748b', marginBottom: '4px' }}>Comma separated, e.g. FB, SL, CH</div>
+                  <input
+                    autoFocus
+                    value={pitchTypesInput}
+                    onChange={e => setPitchTypesInput(e.target.value)}
+                    onKeyDown={e => { if (e.key === 'Enter') savePitchTypes() }}
+                    style={{ width: '100%', background: 'rgba(255,255,255,0.07)', border: '1px solid #6366f1', borderRadius: '5px', color: 'white', fontSize: '11px', padding: '5px 7px', outline: 'none', boxSizing: 'border-box', marginBottom: '5px' }}
+                  />
+                  <div style={{ display: 'flex', gap: '4px' }}>
+                    <button onClick={savePitchTypes} style={{ flex: 1, padding: '4px', background: '#6366f1', border: 'none', borderRadius: '4px', color: 'white', cursor: 'pointer', fontSize: '10px' }}>Save</button>
+                    <button onClick={() => setEditingPitchTypes(false)} style={{ flex: 1, padding: '4px', background: 'rgba(255,255,255,0.07)', border: 'none', borderRadius: '4px', color: '#94a3b8', cursor: 'pointer', fontSize: '10px' }}>Cancel</button>
+                  </div>
+                </div>
+              ) : (
+                <button onClick={() => { setEditingPitchTypes(true); setPitchTypesInput(pitchTypes.join(', ')) }}
+                  style={{ width: '100%', marginTop: '6px', padding: '5px', background: 'transparent', border: '1px dashed rgba(255,255,255,0.15)', borderRadius: '5px', color: '#475569', cursor: 'pointer', fontSize: '10px' }}>
+                  ✎ Edit pitch mix
+                </button>
+              )
+            )}
+          </Sec>
+
           <Sec label="QUALITY">{Object.entries(CATS).map(([key,val]) => <CBtn key={key} active={selCat===key} onClick={() => setSelCat(key)} color={`rgb(${val.rgb.join(',')})`} dot disabled={isTotal}>{val.label}</CBtn>)}</Sec>
           <Sec label="FILTER">
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
-              {['All',...PITCH_TYPES].map(ft => <button key={ft} onClick={() => setFilter(ft)} style={{ padding: '4px 8px', background: filter===ft?'#6366f1':'rgba(255,255,255,0.05)', border: '1px solid '+(filter===ft?'#6366f1':'rgba(255,255,255,0.1)'), borderRadius: '4px', color: 'white', cursor: 'pointer', fontSize: '10px' }}>{ft}</button>)}
+              {['All',...pitchTypes].map(ft => <button key={ft} onClick={() => setFilter(ft)} style={{ padding: '4px 8px', background: filter===ft?'#6366f1':'rgba(255,255,255,0.05)', border: '1px solid '+(filter===ft?'#6366f1':'rgba(255,255,255,0.1)'), borderRadius: '4px', color: 'white', cursor: 'pointer', fontSize: '10px' }}>{ft}</button>)}
             </div>
           </Sec>
           <Sec label="OPTIONS">
@@ -257,6 +308,7 @@ export default function ChartPanel({ pitcher }) {
           </Sec>
           {!isTotal && <div style={{ display: 'flex', gap: '6px', marginTop: '12px' }}><button onClick={undo} style={xbtn('#374151')}>↩ Undo</button><button onClick={clearSession} style={xbtn('#7f1d1d')}>✕ Clear</button></div>}
         </div>
+
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
           {loading ? (
             <div style={{ width: CW, height: CH, background: '#1a2035', borderRadius: '12px', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#475569', fontSize: '11px', letterSpacing: '2px' }}>LOADING...</div>
@@ -266,6 +318,7 @@ export default function ChartPanel({ pitcher }) {
           )}
           <div style={{ fontSize: '10px', color: '#475569', marginTop: '8px', letterSpacing: '1px' }}>{isTotal ? 'AGGREGATE · READ ONLY' : 'CLICK TO PLACE PITCH · DOUBLE-CLICK TAB TO RENAME'}</div>
         </div>
+
         <div style={{ width: '148px' }}>
           <Sec label="SUMMARY">
             {Object.entries(CATS).map(([key,val]) => {
@@ -290,9 +343,9 @@ export default function ChartPanel({ pitcher }) {
               <div style={{ fontSize: '22px', fontWeight: 'bold' }}>{total}</div>
             </div>
           </Sec>
-          {PITCH_TYPES.filter(pt=>displayPitches.some(p=>p.pitch_type===pt)).length>0 && (
+          {pitchTypes.filter(pt=>displayPitches.some(p=>p.pitch_type===pt)).length>0 && (
             <Sec label="BY TYPE">
-              {PITCH_TYPES.filter(pt=>displayPitches.some(p=>p.pitch_type===pt)).map(pt => {
+              {pitchTypes.filter(pt=>displayPitches.some(p=>p.pitch_type===pt)).map(pt => {
                 const pts = displayPitches.filter(p=>p.pitch_type===pt)
                 const ex=pts.filter(p=>p.quality==='executed').length, cm=pts.filter(p=>p.quality==='competitive').length, nc=pts.filter(p=>p.quality==='notComp').length
                 const ep=Math.round(ex/pts.length*100), cp=Math.round(cm/pts.length*100), np=Math.round(nc/pts.length*100)
@@ -327,6 +380,7 @@ export default function ChartPanel({ pitcher }) {
           )}
         </div>
       </div>
+
       <div style={{ display: 'flex', gap: '20px', marginTop: '20px', flexWrap: 'wrap', justifyContent: 'center' }}>
         {Object.entries(CATS).map(([key,val]) => (
           <div key={key} style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11px', color: '#94a3b8' }}>
