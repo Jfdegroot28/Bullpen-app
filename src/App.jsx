@@ -70,6 +70,11 @@ export default function App() {
     await supabase.from('pitchers').update({ name: name.trim() }).eq('id', id)
   }
 
+  const updatePitcher = (updated) => {
+    setPitchers(prev => prev.map(p => p.id === updated.id ? updated : p))
+    setActivePitcher(updated)
+  }
+
   const signOut = () => supabase.auth.signOut()
 
   if (session === undefined) return (
@@ -168,11 +173,7 @@ export default function App() {
           </div>
         )}
       </div>
-      <ChartPanel pitcher={activePitcher} /><ChartPanel pitcher={activePitcher} onUpdatePitcher={(updated) => {
-  setPitchers(prev => prev.map(p => p.id === updated.id ? updated : p))
-  setActivePitcher(updated)
-}} />
-
+      <ChartPanel pitcher={activePitcher} onUpdatePitcher={updatePitcher} />
     </div>
   )
 }
