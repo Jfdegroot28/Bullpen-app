@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { supabase } from '../supabaseClient'
 
 const CW = 420, CH = 480
@@ -82,21 +82,10 @@ function drawCanvas(canvas, pitches, filter, showDots, line1, line2) {
   ctx.fillText(line2, CW/2, 55)
 }
 
-function useIsMobile() {
-  const [isMobile, setIsMobile] = useState(window.innerWidth < 768)
-  useEffect(() => {
-    const handler = () => setIsMobile(window.innerWidth < 768)
-    window.addEventListener('resize', handler)
-    return () => window.removeEventListener('resize', handler)
-  }, [])
-  return isMobile
-}
-
 export default function ChartPanel({ pitcher, onUpdatePitcher }) {
   const canvasRef = useRef(null)
   const channelRef = useRef(null)
   const notesTimer = useRef(null)
-  const isMobile = useIsMobile()
 
   const [sessions, setSessions]     = useState([])
   const [pitches, setPitches]       = useState([])
@@ -113,8 +102,6 @@ export default function ChartPanel({ pitcher, onUpdatePitcher }) {
   const [pitchTypesInput, setPitchTypesInput] = useState('')
   const [notes, setNotes] = useState('')
   const [notesSaved, setNotesSaved] = useState(true)
-  const [showStats, setShowStats] = useState(false)
-  const [showSessionDrawer, setShowSessionDrawer] = useState(false)
 
   const pitchTypes = pitcher?.pitch_types || ['FB', 'CT', 'SL', 'CH']
   const isTotal = activeSessionId === null
@@ -157,7 +144,7 @@ export default function ChartPanel({ pitcher, onUpdatePitcher }) {
   }, [activeSessionId])
 
   useEffect(() => {
-    if (!pitcher || sessions.length === 0 || !isTotal) { if(isTotal) setAllPitches([]); return }
+    if (!pitcher || sessions.length === 0 || !isTotal) { if (isTotal) setAllPitches([]); return }
     const load = async () => {
       const ids = sessions.map(s => s.id)
       const { data } = await supabase.from('pitches').select('*').in('session_id', ids).order('created_at')
@@ -215,7 +202,7 @@ export default function ChartPanel({ pitcher, onUpdatePitcher }) {
   const addSession = async () => {
     const { data, error } = await supabase.from('sessions').insert({ pitcher_id: pitcher.id, name: `Session ${sessions.length + 1}`, session_date: new Date().toISOString().split('T')[0], notes: '' }).select().single()
     if (error) { console.error(error); return }
-    setSessions(prev => [...prev, data]); setActiveSessionId(data.id); setShowSessionDrawer(false)
+    setSessions(prev => [...prev, data]); setActiveSessionId(data.id)
   }
 
   const deleteSession = async (id) => {
@@ -250,165 +237,6 @@ export default function ChartPanel({ pitcher, onUpdatePitcher }) {
     </div>
   )
 
-  // ── MOBILE LAYOUT ──────────────────────────────────────────────────────────
-  if (isMobile) return (
-    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', height: '100vh', overflow: 'hidden', position: 'relative' }}>
-
-      {/* Mobile header */}
-      <div style={{ padding: '10px 14px', background: 'rgba(10,20,60,0.8)', borderBottom: '1px solid rgba(245,166,35,0.2)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0 }}>
-        <div>
-          <div style={{ fontSize: '14px', fontWeight: 'bold', letterSpacing: '1px' }}>{pitcher.name}</div>
-          <div style={{ fontSize: '10px', color: '#f5a623' }}>{pitcher.hand} · {displayPitches.length} pitches</div>
-        </div>
-        <div style={{ display: 'flex', gap: '8px' }}>
-          <button onClick={() => setShowStats(s => !s)}
-            style={{ padding: '6px 12px', background: showStats ? '#f5a623' : 'rgba(245,166,35,0.15)', border: '1px solid rgba(245,166,35,0.4)', borderRadius: '6px', color: showStats ? '#0f1a3d' : '#f5a623', cursor: 'pointer', fontSize: '11px', fontWeight: 'bold' }}>
-            STATS
-          </button>
-          <button onClick={() => setShowSessionDrawer(s => !s)}
-            style={{ padding: '6px 12px', background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.15)', borderRadius: '6px', color: 'white', cursor: 'pointer', fontSize: '11px' }}>
-            {isTotal ? '⬡ ALL' : (activeSession?.name || 'Session')}
-          </button>
-        </div>
-      </div>
-
-      {/* Stats overlay */}
-      {showStats && (
-        <div style={{ position: 'absolute', top: '52px', left: 0, right: 0, bottom: '140px', background: 'rgba(10,20,60,0.97)', zIndex: 20, overflowY: 'auto', padding: '16px' }}>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '8px', marginBottom: '16px' }}>
-            {Object.entries(CATS).map(([key, val]) => {
-              const n = displayPitches.filter(p => p.quality === key).length
-              const pct = total > 0 ? Math.round(n/total*100) : 0
-              return (
-                <div key={key} style={{ padding: '10px', background: 'rgba(255,255,255,0.05)', borderRadius: '8px', borderTop: `3px solid rgb(${val.rgb.join(',')})`, textAlign: 'center' }}>
-                  <div style={{ fontSize: '8px', color: '#94a3b8', marginBottom: '4px' }}>{val.short}</div>
-                  <div style={{ fontSize: '20px', fontWeight: 'bold' }}>{n}</div>
-                  <div style={{ fontSize: '10px', color: `rgb(${val.rgb.join(',')})`, fontWeight: 'bold' }}>{pct}%</div>
-                </div>
-              )
-            })}
-          </div>
-          {pitchTypes.filter(pt => displayPitches.some(p => p.pitch_type === pt)).map(pt => {
-            const pts = displayPitches.filter(p => p.pitch_type === pt)
-            const ex = pts.filter(p => p.quality === 'executed').length
-            const cm = pts.filter(p => p.quality === 'competitive').length
-            const nc = pts.filter(p => p.quality === 'notComp').length
-            const ep = Math.round(ex/pts.length*100), cp = Math.round(cm/pts.length*100), np = Math.round(nc/pts.length*100)
-            return (
-              <div key={pt} style={{ padding: '10px', marginBottom: '8px', background: 'rgba(255,255,255,0.04)', borderRadius: '8px', borderLeft: '3px solid #f5a623' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '6px' }}>
-                  <span style={{ fontWeight: 'bold' }}>{pt}</span>
-                  <span style={{ color: '#94a3b8', fontSize: '12px' }}>{pts.length} pitches</span>
-                </div>
-                <div style={{ display: 'flex', height: '6px', borderRadius: '3px', overflow: 'hidden', marginBottom: '6px' }}>
-                  <div style={{ width: `${ep}%`, background: 'rgb(34,197,94)' }} />
-                  <div style={{ width: `${cp}%`, background: 'rgb(250,204,21)' }} />
-                  <div style={{ width: `${np}%`, background: 'rgb(239,68,68)' }} />
-                </div>
-                <div style={{ display: 'flex', gap: '12px', fontSize: '11px' }}>
-                  <span style={{ color: 'rgb(34,197,94)' }}>EX {ex}/{pts.length} ({ep}%)</span>
-                  <span style={{ color: 'rgb(250,204,21)' }}>CM {cm}/{pts.length} ({cp}%)</span>
-                  <span style={{ color: 'rgb(239,68,68)' }}>NC {nc}/{pts.length} ({np}%)</span>
-                </div>
-              </div>
-            )
-          })}
-
-          {/* Notes in stats panel */}
-          {!isTotal && (
-            <div style={{ marginTop: '8px' }}>
-              <div style={{ fontSize: '9px', letterSpacing: '2px', color: '#f5a623', marginBottom: '6px' }}>
-                SESSION NOTES {!notesSaved && <span style={{ color: '#f59e0b' }}>· saving...</span>}
-              </div>
-              <textarea
-                value={notes}
-                onChange={e => handleNotesChange(e.target.value)}
-                placeholder="Add notes about this session..."
-                style={{ width: '100%', minHeight: '80px', background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(245,166,35,0.3)', borderRadius: '8px', color: 'white', fontSize: '13px', padding: '10px', outline: 'none', resize: 'none', boxSizing: 'border-box', fontFamily: 'Courier New, monospace' }}
-              />
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Session drawer */}
-      {showSessionDrawer && (
-        <div style={{ position: 'absolute', top: '52px', left: 0, right: 0, background: 'rgba(10,20,60,0.97)', zIndex: 20, borderBottom: '1px solid rgba(245,166,35,0.2)', padding: '12px' }}>
-          <button onClick={() => { setActiveSessionId(null); setFilter('All'); setShowSessionDrawer(false) }}
-            style={{ width: '100%', padding: '10px', marginBottom: '6px', background: isTotal ? 'rgba(245,166,35,0.2)' : 'rgba(255,255,255,0.05)', border: `1px solid ${isTotal ? '#f5a623' : 'rgba(255,255,255,0.1)'}`, borderRadius: '8px', color: isTotal ? '#f5a623' : 'white', cursor: 'pointer', fontSize: '12px', fontWeight: 'bold', textAlign: 'left' }}>
-            ⬡ TOTAL — All Sessions
-          </button>
-          {sessions.map(s => (
-            <div key={s.id} style={{ display: 'flex', gap: '6px', marginBottom: '6px' }}>
-              {editingSession === s.id ? (
-                <input autoFocus value={editingVal} onChange={e => setEditingVal(e.target.value)}
-                  onBlur={() => { renameSession(s.id, editingVal); setEditingSession(null) }}
-                  onKeyDown={e => { if (e.key === 'Enter') { renameSession(s.id, editingVal); setEditingSession(null) } }}
-                  style={{ flex: 1, background: 'rgba(255,255,255,0.1)', border: '1px solid #f5a623', borderRadius: '6px', color: 'white', fontSize: '12px', padding: '8px', outline: 'none' }}
-                />
-              ) : (
-                <button onClick={() => { setActiveSessionId(s.id); setFilter('All'); setShowSessionDrawer(false) }}
-                  onDoubleClick={() => { setEditingSession(s.id); setEditingVal(s.name) }}
-                  style={{ flex: 1, padding: '10px', background: activeSessionId === s.id ? 'rgba(245,166,35,0.15)' : 'rgba(255,255,255,0.05)', border: `1px solid ${activeSessionId === s.id ? '#f5a623' : 'rgba(255,255,255,0.1)'}`, borderRadius: '8px', color: activeSessionId === s.id ? '#f5a623' : 'white', cursor: 'pointer', fontSize: '12px', textAlign: 'left' }}>
-                  {s.name} <span style={{ color: '#475569', fontSize: '10px' }}>({s.pitches?.length ?? 0})</span>
-                </button>
-              )}
-              <button onClick={() => deleteSession(s.id)} style={{ padding: '10px', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px', color: '#475569', cursor: 'pointer', fontSize: '12px' }}>✕</button>
-            </div>
-          ))}
-          <button onClick={addSession} style={{ width: '100%', padding: '10px', background: 'transparent', border: '1px dashed rgba(245,166,35,0.3)', borderRadius: '8px', color: '#f5a623', cursor: 'pointer', fontSize: '12px' }}>
-            + New Session
-          </button>
-        </div>
-      )}
-
-      {/* Canvas */}
-      <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '8px', overflow: 'hidden' }}>
-        {loading ? (
-          <div style={{ color: '#f5a623', fontSize: '11px', letterSpacing: '2px' }}>LOADING...</div>
-        ) : (
-          <canvas ref={canvasRef} width={CW} height={CH} onClick={handleCanvasClick}
-            style={{ cursor: isTotal ? 'default' : 'crosshair', borderRadius: '12px', border: isTotal ? '1px solid rgba(245,166,35,0.4)' : '1px solid rgba(255,255,255,0.1)', width: '100%', maxWidth: '420px', height: 'auto' }} />
-        )}
-      </div>
-
-      {/* Filter bar */}
-      {!isTotal && (
-        <div style={{ padding: '6px 10px', background: 'rgba(10,20,60,0.6)', display: 'flex', gap: '4px', overflowX: 'auto', flexShrink: 0 }}>
-          {['All', ...pitchTypes].map(ft => (
-            <button key={ft} onClick={() => setFilter(ft)} style={{ padding: '5px 10px', flexShrink: 0, background: filter === ft ? '#f5a623' : 'rgba(255,255,255,0.05)', border: '1px solid ' + (filter === ft ? '#f5a623' : 'rgba(255,255,255,0.1)'), borderRadius: '4px', color: filter === ft ? '#0f1a3d' : 'white', cursor: 'pointer', fontSize: '11px', fontWeight: filter === ft ? 'bold' : 'normal' }}>{ft}</button>
-          ))}
-        </div>
-      )}
-
-      {/* Bottom toolbar */}
-      {!isTotal && (
-        <div style={{ background: 'rgba(10,20,60,0.95)', borderTop: '1px solid rgba(245,166,35,0.2)', padding: '10px', flexShrink: 0 }}>
-          {/* Pitch type row */}
-          <div style={{ display: 'flex', gap: '6px', marginBottom: '8px', overflowX: 'auto' }}>
-            {pitchTypes.map(pt => (
-              <button key={pt} onClick={() => setSelType(pt)}
-                style={{ flex: 1, minWidth: '52px', padding: '10px 6px', background: selType === pt ? 'rgba(245,166,35,0.25)' : 'rgba(255,255,255,0.06)', border: `2px solid ${selType === pt ? '#f5a623' : 'rgba(255,255,255,0.1)'}`, borderRadius: '8px', color: selType === pt ? '#f5a623' : '#94a3b8', cursor: 'pointer', fontSize: '13px', fontWeight: 'bold' }}>
-                {pt}
-              </button>
-            ))}
-          </div>
-          {/* Quality row */}
-          <div style={{ display: 'flex', gap: '6px' }}>
-            {Object.entries(CATS).map(([key, val]) => (
-              <button key={key} onClick={() => setSelCat(key)}
-                style={{ flex: 1, padding: '10px 4px', background: selCat === key ? `rgba(${val.rgb.join(',')},0.2)` : 'rgba(255,255,255,0.06)', border: `2px solid ${selCat === key ? `rgb(${val.rgb.join(',')})` : 'rgba(255,255,255,0.1)'}`, borderRadius: '8px', color: selCat === key ? `rgb(${val.rgb.join(',')})` : '#64748b', cursor: 'pointer', fontSize: '10px', fontWeight: selCat === key ? 'bold' : 'normal' }}>
-                {val.short}
-              </button>
-            ))}
-            <button onClick={undo} style={{ padding: '10px 12px', background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px', color: '#94a3b8', cursor: 'pointer', fontSize: '14px' }}>↩</button>
-          </div>
-        </div>
-      )}
-    </div>
-  )
-
-  // ── DESKTOP LAYOUT ─────────────────────────────────────────────────────────
   return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '20px 16px', overflowY: 'auto' }}>
       <div style={{ textAlign: 'center', marginBottom: '14px' }}>
@@ -501,7 +329,6 @@ export default function ChartPanel({ pitcher, onUpdatePitcher }) {
           )}
           <div style={{ fontSize: '10px', color: '#f5a623', marginTop: '8px', letterSpacing: '1px', opacity: 0.6 }}>{isTotal ? 'AGGREGATE · READ ONLY' : 'CLICK TO PLACE PITCH · DOUBLE-CLICK TAB TO RENAME'}</div>
 
-          {/* Notes section - desktop */}
           {!isTotal && (
             <div style={{ marginTop: '16px', width: '100%', maxWidth: CW }}>
               <div style={{ fontSize: '9px', letterSpacing: '2px', color: '#f5a623', marginBottom: '6px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
