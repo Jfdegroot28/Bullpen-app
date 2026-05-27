@@ -168,7 +168,11 @@ export default function App() {
           </div>
         )}
       </div>
-      <ChartPanel pitcher={activePitcher} />
+      <ChartPanel pitcher={activePitcher} /><ChartPanel pitcher={activePitcher} onUpdatePitcher={(updated) => {
+  setPitchers(prev => prev.map(p => p.id === updated.id ? updated : p))
+  setActivePitcher(updated)
+}} />
+
     </div>
   )
 }
