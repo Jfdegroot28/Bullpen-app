@@ -4,6 +4,7 @@ import { supabase } from '../supabaseClient'
 const CW = 420, CH = 480
 const ZL = 110, ZT = 90, ZR = 310, ZB = 350
 const ZW = ZR - ZL, ZH = ZB - ZT
+const INCHES_PER_PX = 17 / ZW  // plate is 17" wide
 
 const CATS = {
   executed:    { label: 'Executed',         short: 'EX', rgb: [34, 197, 94]  },
@@ -16,7 +17,17 @@ function kernel(x, y, px, py, bw) {
   return Math.exp(-0.5 * (dx * dx + dy * dy))
 }
 
-function drawCanvas(canvas, pitches, filter, showDots, line1, line2) {
+function missDirection(avgDdx, avgDdy, hand) {
+  const hMag = Math.abs(avgDdx) * INCHES_PER_PX
+  const vMag = Math.abs(avgDdy) * INCHES_PER_PX
+  let hSide
+  if (hand === 'LHP') hSide = avgDdx >= 0 ? 'arm-side' : 'glove-side'
+  else hSide = avgDdx >= 0 ? 'glove-side' : 'arm-side'
+  const vDir = avgDdy >= 0 ? 'down' : 'up'
+  return { hMag, vMag, hSide, vDir }
+}
+
+function drawCanvas(canvas, pitches, filter, showDots, showTargets, pendingTarget, line1, line2) {
   if (!canvas) return
   const ctx = canvas.getContext('2d')
   ctx.clearRect(0, 0, CW, CH)
@@ -66,6 +77,18 @@ function drawCanvas(canvas, pitches, filter, showDots, line1, line2) {
   ctx.moveTo(ppx-pw/2, ppy-8); ctx.lineTo(ppx+pw/2, ppy-8)
   ctx.lineTo(ppx+pw/2, ppy+4); ctx.lineTo(ppx, ppy+18); ctx.lineTo(ppx-pw/2, ppy+4)
   ctx.closePath(); ctx.fill()
+
+  // target rings + connector lines (drawn under dots)
+  if (showTargets) {
+    visible.forEach(p => {
+      if (p.target_x == null || p.target_y == null) return
+      ctx.strokeStyle = 'rgba(245,166,35,0.45)'; ctx.lineWidth = 1.5
+      ctx.beginPath(); ctx.moveTo(p.target_x, p.target_y); ctx.lineTo(p.x, p.y); ctx.stroke()
+      ctx.beginPath(); ctx.arc(p.target_x, p.target_y, 6, 0, Math.PI*2)
+      ctx.strokeStyle = 'rgba(245,166,35,0.95)'; ctx.lineWidth = 2; ctx.stroke()
+    })
+  }
+
   if (showDots) {
     visible.forEach(p => {
       ctx.beginPath(); ctx.arc(p.x, p.y, 5.5, 0, Math.PI*2)
@@ -75,6 +98,15 @@ function drawCanvas(canvas, pitches, filter, showDots, line1, line2) {
       ctx.fillText(p.pitch_type, p.x, p.y-8)
     })
   }
+
+  // pending target (drawn on top)
+  if (pendingTarget) {
+    ctx.beginPath(); ctx.arc(pendingTarget.x, pendingTarget.y, 9, 0, Math.PI*2)
+    ctx.strokeStyle = '#f5a623'; ctx.lineWidth = 2.5; ctx.stroke()
+    ctx.beginPath(); ctx.arc(pendingTarget.x, pendingTarget.y, 2.5, 0, Math.PI*2)
+    ctx.fillStyle = '#f5a623'; ctx.fill()
+  }
+
   ctx.textAlign = 'center'
   ctx.fillStyle = 'rgba(255,255,255,0.9)'; ctx.font = 'bold 13px Courier New'
   ctx.fillText(line1, CW/2, 35)
@@ -95,6 +127,8 @@ export default function ChartPanel({ pitcher, onUpdatePitcher }) {
   const [selType, setSelType] = useState(null)
   const [filter, setFilter]   = useState('All')
   const [showDots, setShowDots] = useState(true)
+  const [showTargets, setShowTargets] = useState(true)
+  const [pendingTarget, setPendingTarget] = useState(null)
   const [loading, setLoading] = useState(true)
   const [editingSession, setEditingSession] = useState(null)
   const [editingVal, setEditingVal] = useState('')
@@ -115,7 +149,7 @@ export default function ChartPanel({ pitcher, onUpdatePitcher }) {
 
   useEffect(() => {
     if (!pitcher) return
-    setLoading(true); setPitches([]); setAllPitches([]); setActiveSessionId(null); setNotes('')
+    setLoading(true); setPitches([]); setAllPitches([]); setActiveSessionId(null); setNotes(''); setPendingTarget(null)
     const load = async () => {
       const { data } = await supabase.from('sessions').select('*').eq('pitcher_id', pitcher.id).order('created_at', { ascending: true })
       setSessions(data || [])
@@ -126,6 +160,7 @@ export default function ChartPanel({ pitcher, onUpdatePitcher }) {
   }, [pitcher?.id])
 
   useEffect(() => {
+    setPendingTarget(null)
     if (!activeSessionId) { setPitches([]); setNotes(''); return }
     const session = sessions.find(s => s.id === activeSessionId)
     setNotes(session?.notes || '')
@@ -137,7 +172,7 @@ export default function ChartPanel({ pitcher, onUpdatePitcher }) {
     load()
     if (channelRef.current) supabase.removeChannel(channelRef.current)
     channelRef.current = supabase.channel('pitches-' + activeSessionId)
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'pitches', filter: `session_id=eq.${activeSessionId}` }, payload => setPitches(prev => [...prev, payload.new]))
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'pitches', filter: `session_id=eq.${activeSessionId}` }, payload => setPitches(prev => prev.some(p => p.id === payload.new.id) ? prev : [...prev, payload.new]))
       .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'pitches', filter: `session_id=eq.${activeSessionId}` }, payload => setPitches(prev => prev.filter(p => p.id !== payload.old.id)))
       .subscribe()
     return () => { if (channelRef.current) supabase.removeChannel(channelRef.current) }
@@ -157,8 +192,8 @@ export default function ChartPanel({ pitcher, onUpdatePitcher }) {
     if (!pitcher) return
     const line1 = `${pitcher.name.toUpperCase()} — ${pitcher.hand}`
     const line2 = `${isTotal ? 'ALL SESSIONS' : (activeSession?.name?.toUpperCase() ?? '')} · ${filter === 'All' ? 'ALL PITCHES' : filter} · ${displayPitches.length} PITCHES`
-    drawCanvas(canvasRef.current, displayPitches, filter, showDots, line1, line2)
-  }, [displayPitches, filter, showDots, pitcher, activeSessionId, sessions, isTotal])
+    drawCanvas(canvasRef.current, displayPitches, filter, showDots, showTargets, pendingTarget, line1, line2)
+  }, [displayPitches, filter, showDots, showTargets, pendingTarget, pitcher, activeSessionId, sessions, isTotal])
 
   const handleNotesChange = (val) => {
     setNotes(val)
@@ -177,15 +212,20 @@ export default function ChartPanel({ pitcher, onUpdatePitcher }) {
     const rect = canvas.getBoundingClientRect()
     const x = (e.clientX - rect.left) * (CW / rect.width)
     const y = (e.clientY - rect.top) * (CH / rect.height)
-    const optimistic = { id: 'tmp-' + Date.now(), session_id: activeSessionId, x, y, pitch_type: selType, quality: selCat }
+    if (!pendingTarget) { setPendingTarget({ x, y }); return }
+    const tx = pendingTarget.x, ty = pendingTarget.y
+    setPendingTarget(null)
+    const optimistic = { id: 'tmp-' + Date.now(), session_id: activeSessionId, x, y, target_x: tx, target_y: ty, pitch_type: selType, quality: selCat }
     setPitches(prev => [...prev, optimistic])
-    const { data, error } = await supabase.from('pitches').insert({ session_id: activeSessionId, x, y, pitch_type: selType, quality: selCat }).select().single()
+    const { data, error } = await supabase.from('pitches').insert({ session_id: activeSessionId, x, y, target_x: tx, target_y: ty, pitch_type: selType, quality: selCat }).select().single()
     if (error) { setPitches(prev => prev.filter(p => p.id !== optimistic.id)); return }
     setPitches(prev => prev.map(p => p.id === optimistic.id ? data : p))
   }
 
   const undo = async () => {
-    if (isTotal || pitches.length === 0) return
+    if (isTotal) return
+    if (pendingTarget) { setPendingTarget(null); return }
+    if (pitches.length === 0) return
     const last = [...pitches].at(-1)
     if (!last) return
     setPitches(prev => prev.filter(p => p.id !== last.id))
@@ -195,7 +235,7 @@ export default function ChartPanel({ pitcher, onUpdatePitcher }) {
   const clearSession = async () => {
     if (isTotal || !activeSessionId) return
     if (!confirm('Clear all pitches from this session?')) return
-    setPitches([])
+    setPitches([]); setPendingTarget(null)
     await supabase.from('pitches').delete().eq('session_id', activeSessionId)
   }
 
@@ -313,8 +353,11 @@ export default function ChartPanel({ pitcher, onUpdatePitcher }) {
             </div>
           </Sec>
           <Sec label="OPTIONS">
-            <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '11px', cursor: 'pointer' }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '11px', cursor: 'pointer', marginBottom: '6px' }}>
               <input type="checkbox" checked={showDots} onChange={e => setShowDots(e.target.checked)} /> Show dots
+            </label>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '11px', cursor: 'pointer' }}>
+              <input type="checkbox" checked={showTargets} onChange={e => setShowTargets(e.target.checked)} /> Show targets
             </label>
           </Sec>
           {!isTotal && <div style={{ display: 'flex', gap: '6px', marginTop: '12px' }}><button onClick={undo} style={xbtn('#1e3a5f')}>↩ Undo</button><button onClick={clearSession} style={xbtn('#7f1d1d')}>✕ Clear</button></div>}
@@ -327,7 +370,13 @@ export default function ChartPanel({ pitcher, onUpdatePitcher }) {
             <canvas ref={canvasRef} width={CW} height={CH} onClick={handleCanvasClick}
               style={{ cursor: isTotal?'default':'crosshair', borderRadius: '12px', border: isTotal?'1px solid rgba(245,166,35,0.4)':'1px solid rgba(255,255,255,0.1)', maxWidth: '100%', boxShadow: isTotal?'0 0 40px rgba(245,166,35,0.15)':'0 0 40px rgba(0,0,0,0.6)' }} />
           )}
-          <div style={{ fontSize: '10px', color: '#f5a623', marginTop: '8px', letterSpacing: '1px', opacity: 0.6 }}>{isTotal ? 'AGGREGATE · READ ONLY' : 'CLICK TO PLACE PITCH · DOUBLE-CLICK TAB TO RENAME'}</div>
+          {!isTotal && pendingTarget && (
+            <div style={{ marginTop: '8px', display: 'flex', alignItems: 'center', gap: '10px', background: 'rgba(245,166,35,0.12)', border: '1px solid rgba(245,166,35,0.5)', borderRadius: '8px', padding: '6px 12px' }}>
+              <span style={{ fontSize: '11px', color: '#f5a623' }}>🎯 Target set — tap where the pitch finished</span>
+              <button onClick={() => setPendingTarget(null)} style={{ background: 'none', border: 'none', color: '#94a3b8', cursor: 'pointer', fontSize: '10px', textDecoration: 'underline' }}>reset</button>
+            </div>
+          )}
+          <div style={{ fontSize: '10px', color: '#f5a623', marginTop: '8px', letterSpacing: '1px', opacity: 0.6 }}>{isTotal ? 'AGGREGATE · READ ONLY' : 'TAP TARGET, THEN TAP RESULT · DOUBLE-CLICK TAB TO RENAME'}</div>
 
           {!isTotal && (
             <div style={{ marginTop: '16px', width: '100%', maxWidth: CW }}>
@@ -370,6 +419,35 @@ export default function ChartPanel({ pitcher, onUpdatePitcher }) {
               <div style={{ fontSize: '22px', fontWeight: 'bold' }}>{total}</div>
             </div>
           </Sec>
+
+          {pitchTypes.filter(pt=>displayPitches.some(p=>p.pitch_type===pt && p.target_x != null)).length>0 && (
+            <Sec label="COMMAND">
+              {pitchTypes.filter(pt=>displayPitches.some(p=>p.pitch_type===pt && p.target_x != null)).map(pt => {
+                const tp = displayPitches.filter(p=>p.pitch_type===pt && p.target_x != null && p.target_y != null)
+                const n = tp.length
+                const avgDdx = tp.reduce((s,p)=>s+(p.x-p.target_x),0)/n
+                const avgDdy = tp.reduce((s,p)=>s+(p.y-p.target_y),0)/n
+                const avgMiss = tp.reduce((s,p)=>s+Math.sqrt((p.x-p.target_x)**2+(p.y-p.target_y)**2),0)/n*INCHES_PER_PX
+                const d = missDirection(avgDdx, avgDdy, pitcher.hand)
+                return (
+                  <div key={pt} style={{ padding: '10px', marginBottom: '8px', background: 'rgba(255,255,255,0.04)', borderRadius: '8px', borderLeft: '3px solid #f5a623' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '6px' }}>
+                      <span style={{ fontWeight: 'bold', fontSize: '13px' }}>{pt}</span>
+                      <span style={{ fontSize: '10px', color: '#94a3b8' }}>{n} w/ target</span>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'baseline', gap: '5px', marginBottom: '4px' }}>
+                      <span style={{ fontSize: '18px', fontWeight: 'bold', color: '#f5a623' }}>{avgMiss.toFixed(1)}"</span>
+                      <span style={{ fontSize: '9px', color: '#64748b' }}>avg miss</span>
+                    </div>
+                    <div style={{ fontSize: '10px', color: '#94a3b8', lineHeight: 1.4 }}>
+                      {d.hMag.toFixed(1)}" {d.hSide}<br/>{d.vMag.toFixed(1)}" {d.vDir}
+                    </div>
+                  </div>
+                )
+              })}
+            </Sec>
+          )}
+
           {pitchTypes.filter(pt=>displayPitches.some(p=>p.pitch_type===pt)).length>0 && (
             <Sec label="BY TYPE">
               {pitchTypes.filter(pt=>displayPitches.some(p=>p.pitch_type===pt)).map(pt => {
@@ -408,13 +486,17 @@ export default function ChartPanel({ pitcher, onUpdatePitcher }) {
         </div>
       </div>
 
-      <div style={{ display: 'flex', gap: '20px', marginTop: '20px', flexWrap: 'wrap', justifyContent: 'center' }}>
+      <div style={{ display: 'flex', gap: '20px', marginTop: '20px', flexWrap: 'wrap', justifyContent: 'center', alignItems: 'center' }}>
         {Object.entries(CATS).map(([key,val]) => (
           <div key={key} style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11px', color: '#94a3b8' }}>
             <div style={{ width: '12px', height: '12px', borderRadius: '50%', background: `rgb(${val.rgb.join(',')})` }} />
             {val.label}
           </div>
         ))}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11px', color: '#94a3b8' }}>
+          <div style={{ width: '12px', height: '12px', borderRadius: '50%', border: '2px solid #f5a623', boxSizing: 'border-box' }} />
+          Target
+        </div>
       </div>
     </div>
   )
