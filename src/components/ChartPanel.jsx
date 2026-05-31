@@ -27,7 +27,25 @@ function missDirection(avgDdx, avgDdy, hand) {
   return { hMag, vMag, hSide, vDir }
 }
 
-function drawCanvas(canvas, pitches, filter, showDots, showTargets, pendingTarget, line1, line2) {
+function commandStats(tp) {
+  const n = tp.length
+  if (n === 0) return null
+  const ddx = tp.map(p => p.x - p.target_x)
+  const ddy = tp.map(p => p.y - p.target_y)
+  const mDdx = ddx.reduce((a,b)=>a+b,0)/n
+  const mDdy = ddy.reduce((a,b)=>a+b,0)/n
+  const avgMissPx = tp.reduce((s,p)=>s+Math.hypot(p.x-p.target_x, p.y-p.target_y),0)/n
+  let varX = 0, varY = 0
+  for (let i = 0; i < n; i++) { varX += (ddx[i]-mDdx)**2; varY += (ddy[i]-mDdy)**2 }
+  varX /= n; varY /= n
+  const stdX = Math.sqrt(varX), stdY = Math.sqrt(varY)
+  const spreadPx = Math.sqrt(varX + varY)
+  const meanActualX = tp.reduce((s,p)=>s+p.x,0)/n
+  const meanActualY = tp.reduce((s,p)=>s+p.y,0)/n
+  return { n, mDdx, mDdy, avgMissIn: avgMissPx*INCHES_PER_PX, stdX, stdY, spreadIn: spreadPx*INCHES_PER_PX, meanActualX, meanActualY }
+}
+
+function drawCanvas(canvas, pitches, filter, showDots, showTargets, showSpread, pendingTarget, line1, line2) {
   if (!canvas) return
   const ctx = canvas.getContext('2d')
   ctx.clearRect(0, 0, CW, CH)
@@ -78,7 +96,6 @@ function drawCanvas(canvas, pitches, filter, showDots, showTargets, pendingTarge
   ctx.lineTo(ppx+pw/2, ppy+4); ctx.lineTo(ppx, ppy+18); ctx.lineTo(ppx-pw/2, ppy+4)
   ctx.closePath(); ctx.fill()
 
-  // target rings + connector lines (drawn under dots)
   if (showTargets) {
     visible.forEach(p => {
       if (p.target_x == null || p.target_y == null) return
@@ -86,6 +103,21 @@ function drawCanvas(canvas, pitches, filter, showDots, showTargets, pendingTarge
       ctx.beginPath(); ctx.moveTo(p.target_x, p.target_y); ctx.lineTo(p.x, p.y); ctx.stroke()
       ctx.beginPath(); ctx.arc(p.target_x, p.target_y, 6, 0, Math.PI*2)
       ctx.strokeStyle = 'rgba(245,166,35,0.95)'; ctx.lineWidth = 2; ctx.stroke()
+    })
+  }
+
+  if (showSpread) {
+    const types = [...new Set(visible.filter(p => p.target_x != null).map(p => p.pitch_type))]
+    types.forEach(t => {
+      const tp = visible.filter(p => p.pitch_type === t && p.target_x != null && p.target_y != null)
+      if (tp.length < 3) return
+      const st = commandStats(tp)
+      ctx.beginPath()
+      ctx.ellipse(st.meanActualX, st.meanActualY, Math.max(st.stdX,4), Math.max(st.stdY,4), 0, 0, Math.PI*2)
+      ctx.strokeStyle = 'rgba(245,166,35,0.6)'; ctx.lineWidth = 1.5; ctx.setLineDash([3,3]); ctx.stroke(); ctx.setLineDash([])
+      ctx.fillStyle = 'rgba(245,166,35,0.06)'; ctx.fill()
+      ctx.fillStyle = 'rgba(245,166,35,0.9)'; ctx.font = 'bold 9px Courier New'; ctx.textAlign = 'center'
+      ctx.fillText(t, st.meanActualX, st.meanActualY - Math.max(st.stdY,4) - 4)
     })
   }
 
@@ -99,7 +131,6 @@ function drawCanvas(canvas, pitches, filter, showDots, showTargets, pendingTarge
     })
   }
 
-  // pending target (drawn on top)
   if (pendingTarget) {
     ctx.beginPath(); ctx.arc(pendingTarget.x, pendingTarget.y, 9, 0, Math.PI*2)
     ctx.strokeStyle = '#f5a623'; ctx.lineWidth = 2.5; ctx.stroke()
@@ -128,6 +159,7 @@ export default function ChartPanel({ pitcher, onUpdatePitcher }) {
   const [filter, setFilter]   = useState('All')
   const [showDots, setShowDots] = useState(true)
   const [showTargets, setShowTargets] = useState(true)
+  const [showSpread, setShowSpread] = useState(true)
   const [pendingTarget, setPendingTarget] = useState(null)
   const [loading, setLoading] = useState(true)
   const [editingSession, setEditingSession] = useState(null)
@@ -192,8 +224,8 @@ export default function ChartPanel({ pitcher, onUpdatePitcher }) {
     if (!pitcher) return
     const line1 = `${pitcher.name.toUpperCase()} — ${pitcher.hand}`
     const line2 = `${isTotal ? 'ALL SESSIONS' : (activeSession?.name?.toUpperCase() ?? '')} · ${filter === 'All' ? 'ALL PITCHES' : filter} · ${displayPitches.length} PITCHES`
-    drawCanvas(canvasRef.current, displayPitches, filter, showDots, showTargets, pendingTarget, line1, line2)
-  }, [displayPitches, filter, showDots, showTargets, pendingTarget, pitcher, activeSessionId, sessions, isTotal])
+    drawCanvas(canvasRef.current, displayPitches, filter, showDots, showTargets, showSpread, pendingTarget, line1, line2)
+  }, [displayPitches, filter, showDots, showTargets, showSpread, pendingTarget, pitcher, activeSessionId, sessions, isTotal])
 
   const handleNotesChange = (val) => {
     setNotes(val)
@@ -356,8 +388,11 @@ export default function ChartPanel({ pitcher, onUpdatePitcher }) {
             <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '11px', cursor: 'pointer', marginBottom: '6px' }}>
               <input type="checkbox" checked={showDots} onChange={e => setShowDots(e.target.checked)} /> Show dots
             </label>
-            <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '11px', cursor: 'pointer' }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '11px', cursor: 'pointer', marginBottom: '6px' }}>
               <input type="checkbox" checked={showTargets} onChange={e => setShowTargets(e.target.checked)} /> Show targets
+            </label>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '11px', cursor: 'pointer' }}>
+              <input type="checkbox" checked={showSpread} onChange={e => setShowSpread(e.target.checked)} /> Show spread
             </label>
           </Sec>
           {!isTotal && <div style={{ display: 'flex', gap: '6px', marginTop: '12px' }}><button onClick={undo} style={xbtn('#1e3a5f')}>↩ Undo</button><button onClick={clearSession} style={xbtn('#7f1d1d')}>✕ Clear</button></div>}
@@ -424,23 +459,26 @@ export default function ChartPanel({ pitcher, onUpdatePitcher }) {
             <Sec label="COMMAND">
               {pitchTypes.filter(pt=>displayPitches.some(p=>p.pitch_type===pt && p.target_x != null)).map(pt => {
                 const tp = displayPitches.filter(p=>p.pitch_type===pt && p.target_x != null && p.target_y != null)
-                const n = tp.length
-                const avgDdx = tp.reduce((s,p)=>s+(p.x-p.target_x),0)/n
-                const avgDdy = tp.reduce((s,p)=>s+(p.y-p.target_y),0)/n
-                const avgMiss = tp.reduce((s,p)=>s+Math.sqrt((p.x-p.target_x)**2+(p.y-p.target_y)**2),0)/n*INCHES_PER_PX
-                const d = missDirection(avgDdx, avgDdy, pitcher.hand)
+                const st = commandStats(tp)
+                const d = missDirection(st.mDdx, st.mDdy, pitcher.hand)
+                const tag = st.spreadIn < 3 ? 'TIGHT' : st.spreadIn < 6 ? 'MODERATE' : 'SCATTERED'
+                const tagColor = st.spreadIn < 3 ? 'rgb(34,197,94)' : st.spreadIn < 6 ? 'rgb(250,204,21)' : 'rgb(239,68,68)'
                 return (
                   <div key={pt} style={{ padding: '10px', marginBottom: '8px', background: 'rgba(255,255,255,0.04)', borderRadius: '8px', borderLeft: '3px solid #f5a623' }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '6px' }}>
                       <span style={{ fontWeight: 'bold', fontSize: '13px' }}>{pt}</span>
-                      <span style={{ fontSize: '10px', color: '#94a3b8' }}>{n} w/ target</span>
+                      <span style={{ fontSize: '10px', color: '#94a3b8' }}>{st.n} w/ target</span>
                     </div>
-                    <div style={{ display: 'flex', alignItems: 'baseline', gap: '5px', marginBottom: '4px' }}>
-                      <span style={{ fontSize: '18px', fontWeight: 'bold', color: '#f5a623' }}>{avgMiss.toFixed(1)}"</span>
+                    <div style={{ display: 'flex', alignItems: 'baseline', gap: '5px', marginBottom: '5px' }}>
+                      <span style={{ fontSize: '18px', fontWeight: 'bold', color: '#f5a623' }}>{st.avgMissIn.toFixed(1)}"</span>
                       <span style={{ fontSize: '9px', color: '#64748b' }}>avg miss</span>
                     </div>
-                    <div style={{ fontSize: '10px', color: '#94a3b8', lineHeight: 1.4 }}>
+                    <div style={{ fontSize: '10px', color: '#94a3b8', lineHeight: 1.4, marginBottom: '6px' }}>
                       {d.hMag.toFixed(1)}" {d.hSide}<br/>{d.vMag.toFixed(1)}" {d.vDir}
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', paddingTop: '6px', borderTop: '1px solid rgba(255,255,255,0.06)' }}>
+                      <span style={{ fontSize: '10px', color: '#94a3b8' }}>±{st.spreadIn.toFixed(1)}"</span>
+                      <span style={{ fontSize: '9px', fontWeight: 'bold', letterSpacing: '1px', color: tagColor }}>{tag}</span>
                     </div>
                   </div>
                 )
@@ -496,6 +534,10 @@ export default function ChartPanel({ pitcher, onUpdatePitcher }) {
         <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11px', color: '#94a3b8' }}>
           <div style={{ width: '12px', height: '12px', borderRadius: '50%', border: '2px solid #f5a623', boxSizing: 'border-box' }} />
           Target
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11px', color: '#94a3b8' }}>
+          <div style={{ width: '16px', height: '11px', borderRadius: '50%', border: '1.5px dashed #f5a623', boxSizing: 'border-box' }} />
+          Spread (1σ)
         </div>
       </div>
     </div>
