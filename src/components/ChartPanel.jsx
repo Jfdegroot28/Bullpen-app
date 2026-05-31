@@ -45,7 +45,7 @@ function commandStats(tp) {
   return { n, mDdx, mDdy, avgMissIn: avgMissPx*INCHES_PER_PX, stdX, stdY, spreadIn: spreadPx*INCHES_PER_PX, meanActualX, meanActualY }
 }
 
-function drawCanvas(canvas, pitches, filter, showDots, showTargets, showSpread, pendingTarget, line1, line2) {
+function drawCanvas(canvas, pitches, filter, showDots, showTargets, showSpread, pendingTarget, buildSteps, line1, line2) {
   if (!canvas) return
   const ctx = canvas.getContext('2d')
   ctx.clearRect(0, 0, CW, CH)
@@ -131,6 +131,17 @@ function drawCanvas(canvas, pitches, filter, showDots, showTargets, showSpread, 
     })
   }
 
+  if (buildSteps && buildSteps.length) {
+    buildSteps.forEach((s, i) => {
+      ctx.fillStyle = 'rgba(245,166,35,0.9)'; ctx.font = 'bold 8px Courier New'; ctx.textAlign = 'center'
+      ctx.fillText(s.pitch_type, s.target_x, s.target_y - 12)
+      ctx.beginPath(); ctx.arc(s.target_x, s.target_y, 9, 0, Math.PI*2)
+      ctx.strokeStyle = 'rgba(245,166,35,0.85)'; ctx.lineWidth = 2; ctx.stroke()
+      ctx.fillStyle = '#f5a623'; ctx.font = 'bold 9px Courier New'
+      ctx.fillText(String(i+1), s.target_x, s.target_y + 3)
+    })
+  }
+
   if (pendingTarget) {
     ctx.beginPath(); ctx.arc(pendingTarget.x, pendingTarget.y, 9, 0, Math.PI*2)
     ctx.strokeStyle = '#f5a623'; ctx.lineWidth = 2.5; ctx.stroke()
@@ -169,10 +180,27 @@ export default function ChartPanel({ pitcher, onUpdatePitcher }) {
   const [notes, setNotes] = useState('')
   const [notesSaved, setNotesSaved] = useState(true)
 
+  // scripts
+  const [scripts, setScripts] = useState([])
+  const [selectedScriptId, setSelectedScriptId] = useState('')
+  const [mode, setMode] = useState('log')          // 'log' | 'build' | 'run'
+  const [buildSteps, setBuildSteps] = useState([])
+  const [buildName, setBuildName] = useState('')
+  const [runScript, setRunScript] = useState(null)
+  const [runIndex, setRunIndex] = useState(0)
+
   const pitchTypes = pitcher?.pitch_types || ['FB', 'CT', 'SL', 'CH']
   const isTotal = activeSessionId === null
   const displayPitches = isTotal ? allPitches : pitches
   const activeSession = sessions.find(s => s.id === activeSessionId)
+
+  useEffect(() => {
+    const load = async () => {
+      const { data } = await supabase.from('scripts').select('*').order('created_at')
+      setScripts(data || [])
+    }
+    load()
+  }, [])
 
   useEffect(() => {
     if (pitcher?.pitch_types?.length > 0) setSelType(pitcher.pitch_types[0])
@@ -182,6 +210,7 @@ export default function ChartPanel({ pitcher, onUpdatePitcher }) {
   useEffect(() => {
     if (!pitcher) return
     setLoading(true); setPitches([]); setAllPitches([]); setActiveSessionId(null); setNotes(''); setPendingTarget(null)
+    setMode('log'); setBuildSteps([]); setBuildName(''); setRunScript(null); setRunIndex(0)
     const load = async () => {
       const { data } = await supabase.from('sessions').select('*').eq('pitcher_id', pitcher.id).order('created_at', { ascending: true })
       setSessions(data || [])
@@ -192,7 +221,7 @@ export default function ChartPanel({ pitcher, onUpdatePitcher }) {
   }, [pitcher?.id])
 
   useEffect(() => {
-    setPendingTarget(null)
+    setPendingTarget(null); setMode('log'); setBuildSteps([]); setRunScript(null); setRunIndex(0)
     if (!activeSessionId) { setPitches([]); setNotes(''); return }
     const session = sessions.find(s => s.id === activeSessionId)
     setNotes(session?.notes || '')
@@ -224,8 +253,8 @@ export default function ChartPanel({ pitcher, onUpdatePitcher }) {
     if (!pitcher) return
     const line1 = `${pitcher.name.toUpperCase()} — ${pitcher.hand}`
     const line2 = `${isTotal ? 'ALL SESSIONS' : (activeSession?.name?.toUpperCase() ?? '')} · ${filter === 'All' ? 'ALL PITCHES' : filter} · ${displayPitches.length} PITCHES`
-    drawCanvas(canvasRef.current, displayPitches, filter, showDots, showTargets, showSpread, pendingTarget, line1, line2)
-  }, [displayPitches, filter, showDots, showTargets, showSpread, pendingTarget, pitcher, activeSessionId, sessions, isTotal])
+    drawCanvas(canvasRef.current, displayPitches, filter, showDots, showTargets, showSpread, pendingTarget, mode === 'build' ? buildSteps : [], line1, line2)
+  }, [displayPitches, filter, showDots, showTargets, showSpread, pendingTarget, buildSteps, mode, pitcher, activeSessionId, sessions, isTotal])
 
   const handleNotesChange = (val) => {
     setNotes(val)
@@ -238,20 +267,43 @@ export default function ChartPanel({ pitcher, onUpdatePitcher }) {
     }, 1000)
   }
 
-  const handleCanvasClick = async (e) => {
-    if (isTotal || !activeSessionId || !selType) return
+  const insertPitch = async (rec) => {
+    const optimistic = { id: 'tmp-' + Date.now(), ...rec }
+    setPitches(prev => [...prev, optimistic])
+    const { data, error } = await supabase.from('pitches').insert(rec).select().single()
+    if (error) { setPitches(prev => prev.filter(p => p.id !== optimistic.id)); return }
+    setPitches(prev => prev.map(p => p.id === optimistic.id ? data : p))
+  }
+
+  const handleCanvasClick = (e) => {
     const canvas = canvasRef.current
     const rect = canvas.getBoundingClientRect()
     const x = (e.clientX - rect.left) * (CW / rect.width)
     const y = (e.clientY - rect.top) * (CH / rect.height)
+
+    if (mode === 'build') {
+      setBuildSteps(prev => [...prev, { pitch_type: selType, target_x: x, target_y: y }])
+      return
+    }
+
+    if (mode === 'run') {
+      if (isTotal || !activeSessionId || !runScript) return
+      const steps = runScript.steps || []
+      const step = steps[runIndex]
+      if (!step) return
+      insertPitch({ session_id: activeSessionId, x, y, target_x: step.target_x, target_y: step.target_y, pitch_type: step.pitch_type, quality: selCat })
+      const next = runIndex + 1
+      if (next >= steps.length) { setMode('log'); setRunScript(null); setRunIndex(0); setPendingTarget(null) }
+      else { setRunIndex(next); setPendingTarget({ x: steps[next].target_x, y: steps[next].target_y }); setSelType(steps[next].pitch_type) }
+      return
+    }
+
+    // log mode
+    if (isTotal || !activeSessionId || !selType) return
     if (!pendingTarget) { setPendingTarget({ x, y }); return }
     const tx = pendingTarget.x, ty = pendingTarget.y
     setPendingTarget(null)
-    const optimistic = { id: 'tmp-' + Date.now(), session_id: activeSessionId, x, y, target_x: tx, target_y: ty, pitch_type: selType, quality: selCat }
-    setPitches(prev => [...prev, optimistic])
-    const { data, error } = await supabase.from('pitches').insert({ session_id: activeSessionId, x, y, target_x: tx, target_y: ty, pitch_type: selType, quality: selCat }).select().single()
-    if (error) { setPitches(prev => prev.filter(p => p.id !== optimistic.id)); return }
-    setPitches(prev => prev.map(p => p.id === optimistic.id ? data : p))
+    insertPitch({ session_id: activeSessionId, x, y, target_x: tx, target_y: ty, pitch_type: selType, quality: selCat })
   }
 
   const undo = async () => {
@@ -301,6 +353,31 @@ export default function ChartPanel({ pitcher, onUpdatePitcher }) {
     onUpdatePitcher(data); setSelType(types[0]); setEditingPitchTypes(false)
   }
 
+  // script actions
+  const startBuild = () => { setMode('build'); setBuildSteps([]); setBuildName(''); setPendingTarget(null) }
+  const cancelBuild = () => { setMode('log'); setBuildSteps([]); setBuildName('') }
+  const saveScript = async () => {
+    if (!buildName.trim() || buildSteps.length === 0) return
+    const { data, error } = await supabase.from('scripts').insert({ name: buildName.trim(), steps: buildSteps }).select().single()
+    if (error) { console.error(error); return }
+    setScripts(prev => [...prev, data]); setSelectedScriptId(data.id)
+    setMode('log'); setBuildSteps([]); setBuildName('')
+  }
+  const deleteScript = async () => {
+    if (!selectedScriptId) return
+    if (!confirm('Delete this script?')) return
+    await supabase.from('scripts').delete().eq('id', selectedScriptId)
+    setScripts(prev => prev.filter(s => s.id !== selectedScriptId)); setSelectedScriptId('')
+  }
+  const startRun = () => {
+    const sc = scripts.find(s => s.id === selectedScriptId)
+    if (!sc || !sc.steps || sc.steps.length === 0 || isTotal || !activeSessionId) return
+    setMode('run'); setRunScript(sc); setRunIndex(0)
+    setPendingTarget({ x: sc.steps[0].target_x, y: sc.steps[0].target_y })
+    setSelType(sc.steps[0].pitch_type)
+  }
+  const stopRun = () => { setMode('log'); setRunScript(null); setRunIndex(0); setPendingTarget(null) }
+
   const total = displayPitches.length
 
   if (!pitcher) return (
@@ -308,6 +385,8 @@ export default function ChartPanel({ pitcher, onUpdatePitcher }) {
       SELECT A PITCHER FROM THE ROSTER
     </div>
   )
+
+  const canvasCursor = (mode === 'build' || !isTotal) ? 'crosshair' : 'default'
 
   return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '20px 16px', overflowY: 'auto' }}>
@@ -355,9 +434,63 @@ export default function ChartPanel({ pitcher, onUpdatePitcher }) {
 
       <div style={{ display: 'flex', gap: '20px', flexWrap: 'wrap', justifyContent: 'center', alignItems: 'flex-start' }}>
         <div style={{ width: '160px' }}>
+
+          <Sec label="SCRIPT">
+            {mode === 'log' && (
+              <>
+                {scripts.length > 0 && (
+                  <div style={{ display: 'flex', gap: '4px', marginBottom: '6px' }}>
+                    <select value={selectedScriptId} onChange={e => setSelectedScriptId(e.target.value)}
+                      style={{ flex: 1, background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(245,166,35,0.3)', borderRadius: '5px', color: 'white', fontSize: '10px', padding: '5px' }}>
+                      <option value="">Select…</option>
+                      {scripts.map(s => <option key={s.id} value={s.id}>{s.name} ({s.steps.length})</option>)}
+                    </select>
+                    <button onClick={deleteScript} disabled={!selectedScriptId} style={{ padding: '4px 7px', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '5px', color: '#94a3b8', cursor: 'pointer', fontSize: '11px' }}>🗑</button>
+                  </div>
+                )}
+                <button onClick={startRun} disabled={!selectedScriptId || isTotal}
+                  style={{ width: '100%', padding: '6px', marginBottom: '5px', background: (!selectedScriptId || isTotal) ? 'rgba(255,255,255,0.04)' : '#f5a623', border: 'none', borderRadius: '5px', color: (!selectedScriptId || isTotal) ? '#475569' : '#0f1a3d', fontWeight: 'bold', cursor: 'pointer', fontSize: '10px' }}>
+                  ▶ Run script
+                </button>
+                {isTotal && <div style={{ fontSize: '9px', color: '#64748b', marginBottom: '5px' }}>Pick a session to run a script.</div>}
+                <button onClick={startBuild}
+                  style={{ width: '100%', padding: '6px', background: 'transparent', border: '1px dashed rgba(245,166,35,0.3)', borderRadius: '5px', color: '#f5a623', cursor: 'pointer', fontSize: '10px' }}>
+                  ✎ Build new script
+                </button>
+              </>
+            )}
+            {mode === 'build' && (
+              <div>
+                <input autoFocus value={buildName} onChange={e => setBuildName(e.target.value)} placeholder="Script name…"
+                  style={{ width: '100%', background: 'rgba(255,255,255,0.07)', border: '1px solid #f5a623', borderRadius: '5px', color: 'white', fontSize: '11px', padding: '6px', outline: 'none', boxSizing: 'border-box', marginBottom: '6px' }} />
+                <div style={{ fontSize: '9px', color: '#94a3b8', marginBottom: '6px', lineHeight: 1.4 }}>
+                  Pick a pitch type, then tap the zone to drop each target. Adding: <b style={{ color: '#f5a623' }}>{selType}</b>
+                </div>
+                <div style={{ fontSize: '10px', color: '#f5a623', marginBottom: '6px' }}>{buildSteps.length} steps</div>
+                <button onClick={() => setBuildSteps(prev => prev.slice(0, -1))} disabled={buildSteps.length === 0}
+                  style={{ width: '100%', padding: '5px', marginBottom: '5px', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '5px', color: '#94a3b8', cursor: 'pointer', fontSize: '10px' }}>↩ Undo last</button>
+                <div style={{ display: 'flex', gap: '4px' }}>
+                  <button onClick={saveScript} disabled={!buildName.trim() || buildSteps.length === 0}
+                    style={{ flex: 1, padding: '6px', background: (!buildName.trim() || buildSteps.length === 0) ? 'rgba(255,255,255,0.04)' : '#f5a623', border: 'none', borderRadius: '5px', color: (!buildName.trim() || buildSteps.length === 0) ? '#475569' : '#0f1a3d', fontWeight: 'bold', cursor: 'pointer', fontSize: '10px' }}>Save</button>
+                  <button onClick={cancelBuild} style={{ flex: 1, padding: '6px', background: 'rgba(255,255,255,0.07)', border: 'none', borderRadius: '5px', color: '#94a3b8', cursor: 'pointer', fontSize: '10px' }}>Cancel</button>
+                </div>
+              </div>
+            )}
+            {mode === 'run' && runScript && (
+              <div>
+                <div style={{ fontSize: '10px', color: '#94a3b8', marginBottom: '4px' }}>{runScript.name}</div>
+                <div style={{ fontSize: '13px', fontWeight: 'bold', color: '#f5a623', marginBottom: '6px' }}>
+                  Pitch {runIndex + 1} / {runScript.steps.length} · {runScript.steps[runIndex]?.pitch_type}
+                </div>
+                <div style={{ fontSize: '9px', color: '#64748b', marginBottom: '6px', lineHeight: 1.4 }}>Aim at the gold ring, then tap where it finished. Grade with the quality buttons.</div>
+                <button onClick={stopRun} style={{ width: '100%', padding: '6px', background: '#7f1d1d', border: 'none', borderRadius: '5px', color: 'white', cursor: 'pointer', fontSize: '10px' }}>■ Stop script</button>
+              </div>
+            )}
+          </Sec>
+
           <Sec label="PITCH TYPE">
-            {pitchTypes.map(pt => <CBtn key={pt} active={selType===pt} onClick={() => setSelType(pt)} color="#f5a623" disabled={isTotal}>{pt}</CBtn>)}
-            {!isTotal && (
+            {pitchTypes.map(pt => <CBtn key={pt} active={selType===pt} onClick={() => setSelType(pt)} color="#f5a623" disabled={isTotal || mode==='run'}>{pt}</CBtn>)}
+            {!isTotal && mode === 'log' && (
               editingPitchTypes ? (
                 <div style={{ marginTop: '6px' }}>
                   <div style={{ fontSize: '9px', color: '#64748b', marginBottom: '4px' }}>Comma separated, e.g. FB, SL, CH</div>
@@ -395,7 +528,7 @@ export default function ChartPanel({ pitcher, onUpdatePitcher }) {
               <input type="checkbox" checked={showSpread} onChange={e => setShowSpread(e.target.checked)} /> Show spread
             </label>
           </Sec>
-          {!isTotal && <div style={{ display: 'flex', gap: '6px', marginTop: '12px' }}><button onClick={undo} style={xbtn('#1e3a5f')}>↩ Undo</button><button onClick={clearSession} style={xbtn('#7f1d1d')}>✕ Clear</button></div>}
+          {!isTotal && mode === 'log' && <div style={{ display: 'flex', gap: '6px', marginTop: '12px' }}><button onClick={undo} style={xbtn('#1e3a5f')}>↩ Undo</button><button onClick={clearSession} style={xbtn('#7f1d1d')}>✕ Clear</button></div>}
         </div>
 
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
@@ -403,17 +536,32 @@ export default function ChartPanel({ pitcher, onUpdatePitcher }) {
             <div style={{ width: CW, height: CH, background: '#0f1a3d', borderRadius: '12px', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#f5a623', fontSize: '11px', letterSpacing: '2px' }}>LOADING...</div>
           ) : (
             <canvas ref={canvasRef} width={CW} height={CH} onClick={handleCanvasClick}
-              style={{ cursor: isTotal?'default':'crosshair', borderRadius: '12px', border: isTotal?'1px solid rgba(245,166,35,0.4)':'1px solid rgba(255,255,255,0.1)', maxWidth: '100%', boxShadow: isTotal?'0 0 40px rgba(245,166,35,0.15)':'0 0 40px rgba(0,0,0,0.6)' }} />
+              style={{ cursor: canvasCursor, borderRadius: '12px', border: mode==='build' ? '1px solid rgba(245,166,35,0.7)' : (isTotal?'1px solid rgba(245,166,35,0.4)':'1px solid rgba(255,255,255,0.1)'), maxWidth: '100%', boxShadow: isTotal?'0 0 40px rgba(245,166,35,0.15)':'0 0 40px rgba(0,0,0,0.6)' }} />
           )}
-          {!isTotal && pendingTarget && (
+          {mode === 'run' && pendingTarget && (
+            <div style={{ marginTop: '8px', background: 'rgba(245,166,35,0.12)', border: '1px solid rgba(245,166,35,0.5)', borderRadius: '8px', padding: '6px 12px' }}>
+              <span style={{ fontSize: '11px', color: '#f5a623' }}>🎯 {runScript?.steps[runIndex]?.pitch_type} — tap where the pitch finished</span>
+            </div>
+          )}
+          {mode === 'log' && pendingTarget && (
             <div style={{ marginTop: '8px', display: 'flex', alignItems: 'center', gap: '10px', background: 'rgba(245,166,35,0.12)', border: '1px solid rgba(245,166,35,0.5)', borderRadius: '8px', padding: '6px 12px' }}>
               <span style={{ fontSize: '11px', color: '#f5a623' }}>🎯 Target set — tap where the pitch finished</span>
               <button onClick={() => setPendingTarget(null)} style={{ background: 'none', border: 'none', color: '#94a3b8', cursor: 'pointer', fontSize: '10px', textDecoration: 'underline' }}>reset</button>
             </div>
           )}
-          <div style={{ fontSize: '10px', color: '#f5a623', marginTop: '8px', letterSpacing: '1px', opacity: 0.6 }}>{isTotal ? 'AGGREGATE · READ ONLY' : 'TAP TARGET, THEN TAP RESULT · DOUBLE-CLICK TAB TO RENAME'}</div>
+          {mode === 'build' && (
+            <div style={{ marginTop: '8px', background: 'rgba(245,166,35,0.12)', border: '1px solid rgba(245,166,35,0.5)', borderRadius: '8px', padding: '6px 12px' }}>
+              <span style={{ fontSize: '11px', color: '#f5a623' }}>✎ Building — tap the zone to add target #{buildSteps.length + 1}</span>
+            </div>
+          )}
+          <div style={{ fontSize: '10px', color: '#f5a623', marginTop: '8px', letterSpacing: '1px', opacity: 0.6 }}>
+            {mode === 'build' ? 'TAP ZONE TO ADD SCRIPT TARGETS'
+              : mode === 'run' ? 'TAP WHERE THE PITCH FINISHED'
+              : isTotal ? 'AGGREGATE · READ ONLY'
+              : 'TAP TARGET, THEN TAP RESULT · DOUBLE-CLICK TAB TO RENAME'}
+          </div>
 
-          {!isTotal && (
+          {!isTotal && mode === 'log' && (
             <div style={{ marginTop: '16px', width: '100%', maxWidth: CW }}>
               <div style={{ fontSize: '9px', letterSpacing: '2px', color: '#f5a623', marginBottom: '6px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <span>SESSION NOTES</span>
