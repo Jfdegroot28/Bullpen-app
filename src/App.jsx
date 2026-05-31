@@ -16,6 +16,7 @@ export default function App() {
   const [editingId, setEditingId]     = useState(null)
   const [editingVal, setEditingVal]   = useState('')
   const [rosterLoading, setRosterLoading] = useState(false)
+  const [showLeaderboard, setShowLeaderboard] = useState(false)
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => setSession(session))
@@ -35,7 +36,7 @@ export default function App() {
     load()
     const ch = supabase.channel('pitchers-roster')
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'pitchers' }, payload => {
-        setPitchers(prev => [...prev, payload.new])
+        setPitchers(prev => prev.some(p => p.id === payload.new.id) ? prev : [...prev, payload.new])
       })
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'pitchers' }, payload => {
         setPitchers(prev => prev.map(p => p.id === payload.new.id ? payload.new : p))
@@ -56,7 +57,7 @@ export default function App() {
       .select().single()
     if (error) { console.error(error); return }
     setPitchers(prev => [...prev, data])
-    setActivePitcher(data)
+    setActivePitcher(data); setShowLeaderboard(false)
     setNewName(''); setAddingPitcher(false)
   }
 
@@ -78,10 +79,10 @@ export default function App() {
   const signOut = () => supabase.auth.signOut()
 
   if (session === undefined) return (
-    <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#0d1120', color: 'white', fontFamily: 'Courier New, monospace' }}>
+    <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'linear-gradient(135deg,#1a2a5e,#0f1a3d)', color: 'white', fontFamily: 'Courier New, monospace' }}>
       <div style={{ textAlign: 'center' }}>
         <div style={{ fontSize: '36px', marginBottom: '16px' }}>⚾</div>
-        <div style={{ fontSize: '11px', color: '#64748b', letterSpacing: '3px' }}>LOADING...</div>
+        <div style={{ fontSize: '11px', color: '#f5a623', letterSpacing: '3px' }}>LOADING...</div>
       </div>
     </div>
   )
@@ -89,17 +90,25 @@ export default function App() {
   if (!session) return <Login />
 
   return (
-    <div style={{ height: '100vh', display: 'flex', background: 'linear-gradient(135deg,#0d1120,#111827)', fontFamily: 'Courier New, monospace', color: 'white', overflow: 'hidden' }}>
-      <div style={{ width: sidebarOpen ? '210px' : '46px', flexShrink: 0, background: 'rgba(0,0,0,0.45)', borderRight: '1px solid rgba(255,255,255,0.07)', display: 'flex', flexDirection: 'column', transition: 'width 0.2s', overflow: 'hidden' }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 10px', borderBottom: '1px solid rgba(255,255,255,0.07)', flexShrink: 0 }}>
-          {sidebarOpen && <span style={{ fontSize: '9px', letterSpacing: '2px', color: '#64748b' }}>ROSTER</span>}
-          <button onClick={() => setSidebarOpen(o => !o)} style={{ background: 'none', border: 'none', color: '#64748b', cursor: 'pointer', fontSize: '14px', marginLeft: sidebarOpen ? 'auto' : 0, padding: 0 }}>
+    <div style={{ height: '100vh', display: 'flex', background: 'linear-gradient(135deg,#1a2a5e,#0f1a3d)', fontFamily: 'Courier New, monospace', color: 'white', overflow: 'hidden' }}>
+      <div style={{ width: sidebarOpen ? '210px' : '46px', flexShrink: 0, background: 'rgba(10,20,60,0.7)', borderRight: '1px solid rgba(245,166,35,0.2)', display: 'flex', flexDirection: 'column', transition: 'width 0.2s', overflow: 'hidden' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 10px', borderBottom: '1px solid rgba(245,166,35,0.2)', flexShrink: 0 }}>
+          {sidebarOpen && <span style={{ fontSize: '9px', letterSpacing: '2px', color: '#f5a623' }}>ROSTER</span>}
+          <button onClick={() => setSidebarOpen(o => !o)} style={{ background: 'none', border: 'none', color: '#f5a623', cursor: 'pointer', fontSize: '14px', marginLeft: sidebarOpen ? 'auto' : 0, padding: 0 }}>
             {sidebarOpen ? '◀' : '▶'}
           </button>
         </div>
+
+        <div style={{ padding: '8px', borderBottom: '1px solid rgba(245,166,35,0.2)', flexShrink: 0 }}>
+          <button onClick={() => setShowLeaderboard(true)}
+            style={{ width: '100%', padding: sidebarOpen ? '8px' : '8px 0', background: showLeaderboard ? 'rgba(245,166,35,0.2)' : 'rgba(255,255,255,0.04)', border: `1px solid ${showLeaderboard ? '#f5a623' : 'rgba(245,166,35,0.25)'}`, borderRadius: '6px', color: '#f5a623', cursor: 'pointer', fontSize: sidebarOpen ? '11px' : '14px', fontWeight: 'bold', textAlign: 'center' }}>
+            {sidebarOpen ? '🏆 Leaderboard' : '🏆'}
+          </button>
+        </div>
+
         <div style={{ flex: 1, overflowY: 'auto', padding: '8px 0' }}>
           {rosterLoading && sidebarOpen && (
-            <div style={{ padding: '12px', fontSize: '10px', color: '#475569', textAlign: 'center' }}>LOADING...</div>
+            <div style={{ padding: '12px', fontSize: '10px', color: '#f5a623', textAlign: 'center' }}>LOADING...</div>
           )}
           {pitchers.map(p => (
             <div key={p.id} style={{ position: 'relative', margin: '2px 6px' }}>
@@ -108,16 +117,16 @@ export default function App() {
                   onChange={e => setEditingVal(e.target.value)}
                   onBlur={() => { renamePitcher(p.id, editingVal); setEditingId(null) }}
                   onKeyDown={e => { if (e.key === 'Enter') { renamePitcher(p.id, editingVal); setEditingId(null) } if (e.key === 'Escape') setEditingId(null) }}
-                  style={{ width: '100%', background: 'rgba(255,255,255,0.1)', border: '1px solid #6366f1', borderRadius: '6px', color: 'white', fontSize: '11px', padding: '7px 8px', outline: 'none', boxSizing: 'border-box' }}
+                  style={{ width: '100%', background: 'rgba(255,255,255,0.1)', border: '1px solid #f5a623', borderRadius: '6px', color: 'white', fontSize: '11px', padding: '7px 8px', outline: 'none', boxSizing: 'border-box' }}
                 />
               ) : (
-                <button onClick={() => setActivePitcher(p)}
+                <button onClick={() => { setActivePitcher(p); setShowLeaderboard(false) }}
                   onDoubleClick={() => { setEditingId(p.id); setEditingVal(p.name) }}
-                  style={{ width: '100%', padding: sidebarOpen ? '9px 28px 9px 10px' : '9px 0', background: activePitcher?.id === p.id ? 'rgba(99,102,241,0.2)' : 'transparent', border: activePitcher?.id === p.id ? '1px solid rgba(99,102,241,0.5)' : '1px solid transparent', borderRadius: '6px', color: activePitcher?.id === p.id ? 'white' : '#94a3b8', cursor: 'pointer', textAlign: sidebarOpen ? 'left' : 'center', fontSize: '11px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                  style={{ width: '100%', padding: sidebarOpen ? '9px 28px 9px 10px' : '9px 0', background: (activePitcher?.id === p.id && !showLeaderboard) ? 'rgba(245,166,35,0.2)' : 'transparent', border: (activePitcher?.id === p.id && !showLeaderboard) ? '1px solid rgba(245,166,35,0.6)' : '1px solid transparent', borderRadius: '6px', color: (activePitcher?.id === p.id && !showLeaderboard) ? 'white' : '#94a3b8', cursor: 'pointer', textAlign: sidebarOpen ? 'left' : 'center', fontSize: '11px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                   {sidebarOpen ? (
                     <>
                       <span style={{ display: 'block', fontWeight: activePitcher?.id === p.id ? 'bold' : 'normal', overflow: 'hidden', textOverflow: 'ellipsis' }}>{p.name}</span>
-                      <span style={{ fontSize: '9px', color: '#475569' }}>{p.hand}</span>
+                      <span style={{ fontSize: '9px', color: '#f5a623' }}>{p.hand}</span>
                     </>
                   ) : (
                     <span style={{ fontSize: '9px' }}>{p.name.slice(0,2).toUpperCase()}</span>
@@ -132,48 +141,121 @@ export default function App() {
           ))}
         </div>
         {sidebarOpen && (
-          <div style={{ padding: '8px', borderTop: '1px solid rgba(255,255,255,0.07)', flexShrink: 0 }}>
+          <div style={{ padding: '8px', borderTop: '1px solid rgba(245,166,35,0.2)', flexShrink: 0 }}>
             {addingPitcher ? (
               <div>
                 <input autoFocus value={newName} onChange={e => setNewName(e.target.value)}
                   onKeyDown={e => { if (e.key === 'Enter') addPitcher(); if (e.key === 'Escape') setAddingPitcher(false) }}
                   placeholder="Name..."
-                  style={{ width: '100%', background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(99,102,241,0.5)', borderRadius: '5px', color: 'white', fontSize: '11px', padding: '6px 8px', outline: 'none', boxSizing: 'border-box', marginBottom: '5px' }}
+                  style={{ width: '100%', background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(245,166,35,0.5)', borderRadius: '5px', color: 'white', fontSize: '11px', padding: '6px 8px', outline: 'none', boxSizing: 'border-box', marginBottom: '5px' }}
                 />
                 <div style={{ display: 'flex', gap: '4px', marginBottom: '5px' }}>
                   {HANDS.map(h => (
                     <button key={h} onClick={() => setNewHand(h)}
-                      style={{ flex: 1, padding: '4px', background: newHand === h ? 'rgba(99,102,241,0.3)' : 'rgba(255,255,255,0.05)', border: `1px solid ${newHand === h ? '#6366f1' : 'rgba(255,255,255,0.1)'}`, borderRadius: '4px', color: 'white', cursor: 'pointer', fontSize: '10px' }}>
+                      style={{ flex: 1, padding: '4px', background: newHand === h ? 'rgba(245,166,35,0.3)' : 'rgba(255,255,255,0.05)', border: `1px solid ${newHand === h ? '#f5a623' : 'rgba(255,255,255,0.1)'}`, borderRadius: '4px', color: 'white', cursor: 'pointer', fontSize: '10px' }}>
                       {h}
                     </button>
                   ))}
                 </div>
                 <div style={{ display: 'flex', gap: '4px' }}>
-                  <button onClick={addPitcher} style={{ flex: 1, padding: '5px', background: '#6366f1', border: 'none', borderRadius: '4px', color: 'white', cursor: 'pointer', fontSize: '10px' }}>Add</button>
+                  <button onClick={addPitcher} style={{ flex: 1, padding: '5px', background: '#f5a623', border: 'none', borderRadius: '4px', color: '#0f1a3d', cursor: 'pointer', fontSize: '10px', fontWeight: 'bold' }}>Add</button>
                   <button onClick={() => { setAddingPitcher(false); setNewName('') }} style={{ flex: 1, padding: '5px', background: 'rgba(255,255,255,0.07)', border: 'none', borderRadius: '4px', color: '#94a3b8', cursor: 'pointer', fontSize: '10px' }}>Cancel</button>
                 </div>
               </div>
             ) : (
               <button onClick={() => setAddingPitcher(true)}
-                style={{ width: '100%', padding: '7px', background: 'rgba(255,255,255,0.04)', border: '1px dashed rgba(255,255,255,0.15)', borderRadius: '6px', color: '#64748b', cursor: 'pointer', fontSize: '10px' }}>
+                style={{ width: '100%', padding: '7px', background: 'rgba(255,255,255,0.04)', border: '1px dashed rgba(245,166,35,0.3)', borderRadius: '6px', color: '#f5a623', cursor: 'pointer', fontSize: '10px' }}>
                 + Add Pitcher
               </button>
             )}
           </div>
         )}
         {sidebarOpen && (
-          <div style={{ padding: '8px', borderTop: '1px solid rgba(255,255,255,0.07)', flexShrink: 0 }}>
-            <div style={{ fontSize: '9px', color: '#374151', marginBottom: '4px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          <div style={{ padding: '8px', borderTop: '1px solid rgba(245,166,35,0.2)', flexShrink: 0 }}>
+            <div style={{ fontSize: '9px', color: '#475569', marginBottom: '4px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               {session.user.email}
             </div>
             <button onClick={signOut}
-              style={{ width: '100%', padding: '6px', background: 'transparent', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '5px', color: '#475569', cursor: 'pointer', fontSize: '10px' }}>
+              style={{ width: '100%', padding: '6px', background: 'transparent', border: '1px solid rgba(245,166,35,0.2)', borderRadius: '5px', color: '#f5a623', cursor: 'pointer', fontSize: '10px' }}>
               Sign Out
             </button>
           </div>
         )}
       </div>
-      <ChartPanel pitcher={activePitcher} onUpdatePitcher={updatePitcher} />
+      {showLeaderboard
+        ? <Leaderboard onSelectPitcher={(id) => { const p = pitchers.find(x => x.id === id); if (p) { setActivePitcher(p); setShowLeaderboard(false) } }} />
+        : <ChartPanel pitcher={activePitcher} onUpdatePitcher={updatePitcher} />}
+    </div>
+  )
+}
+
+function Leaderboard({ onSelectPitcher }) {
+  const [rows, setRows] = useState(null)
+
+  useEffect(() => {
+    const load = async () => {
+      const [{ data: pitchers }, { data: sessions }, { data: pitches }] = await Promise.all([
+        supabase.from('pitchers').select('id,name,hand'),
+        supabase.from('sessions').select('id,pitcher_id'),
+        supabase.from('pitches').select('session_id,quality'),
+      ])
+      const s2p = {}
+      ;(sessions || []).forEach(s => { s2p[s.id] = s.pitcher_id })
+      const stat = {}
+      ;(pitchers || []).forEach(p => { stat[p.id] = { id: p.id, name: p.name, hand: p.hand, total: 0, exec: 0 } })
+      ;(pitches || []).forEach(p => {
+        const pid = s2p[p.session_id]
+        if (!pid || !stat[pid]) return
+        stat[pid].total++
+        if (p.quality === 'executed') stat[pid].exec++
+      })
+      const arr = Object.values(stat).map(r => ({ ...r, pct: r.total ? Math.round(r.exec / r.total * 100) : 0 }))
+      arr.sort((a, b) => b.exec - a.exec || b.pct - a.pct)
+      setRows(arr)
+    }
+    load()
+  }, [])
+
+  const medal = (i) => i === 0 ? '#f5a623' : i === 1 ? '#cbd5e1' : i === 2 ? '#b87333' : 'rgba(255,255,255,0.2)'
+
+  return (
+    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '24px 16px', overflowY: 'auto' }}>
+      <div style={{ textAlign: 'center', marginBottom: '6px' }}>
+        <div style={{ fontSize: '30px' }}>🏆</div>
+        <h1 style={{ fontSize: '20px', fontWeight: 'bold', letterSpacing: '2px', margin: '4px 0 0' }}>EXECUTED LEADERBOARD</h1>
+        <div style={{ fontSize: '10px', color: '#f5a623', marginTop: '4px', letterSpacing: '1px' }}>MOST EXECUTED PITCHES · ALL PITCHERS</div>
+      </div>
+
+      <div style={{ width: '100%', maxWidth: '520px', marginTop: '18px' }}>
+        {rows === null ? (
+          <div style={{ textAlign: 'center', color: '#f5a623', fontSize: '11px', letterSpacing: '2px', padding: '40px' }}>LOADING...</div>
+        ) : rows.length === 0 ? (
+          <div style={{ textAlign: 'center', color: '#64748b', fontSize: '12px', padding: '40px' }}>No pitchers yet.</div>
+        ) : (
+          <>
+            <div style={{ display: 'flex', justifyContent: 'space-between', padding: '0 14px 6px', fontSize: '8px', letterSpacing: '1px', color: '#475569' }}>
+              <span>PITCHER</span><span>EXECUTED · TOTAL · %</span>
+            </div>
+            {rows.map((r, i) => (
+              <button key={r.id} onClick={() => onSelectPitcher(r.id)}
+                style={{ width: '100%', display: 'flex', alignItems: 'center', gap: '12px', padding: '12px 14px', marginBottom: '6px', background: i < 3 ? 'rgba(245,166,35,0.07)' : 'rgba(255,255,255,0.03)', border: `1px solid ${i < 3 ? 'rgba(245,166,35,0.25)' : 'rgba(255,255,255,0.06)'}`, borderRadius: '10px', cursor: 'pointer', textAlign: 'left' }}>
+                <div style={{ width: '26px', height: '26px', flexShrink: 0, borderRadius: '50%', background: medal(i), color: '#0f1a3d', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 'bold', fontSize: '12px' }}>{i + 1}</div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: '14px', fontWeight: 'bold', color: 'white', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.name}</div>
+                  <div style={{ fontSize: '9px', color: '#f5a623' }}>{r.hand}</div>
+                </div>
+                <div style={{ textAlign: 'right' }}>
+                  <div style={{ display: 'flex', alignItems: 'baseline', gap: '4px', justifyContent: 'flex-end' }}>
+                    <span style={{ fontSize: '22px', fontWeight: 'bold', color: '#22c55e', lineHeight: 1 }}>{r.exec}</span>
+                  </div>
+                  <div style={{ fontSize: '9px', color: '#64748b', marginTop: '2px' }}>{r.total} total · {r.pct}%</div>
+                </div>
+              </button>
+            ))}
+          </>
+        )}
+      </div>
+      <div style={{ fontSize: '9px', color: '#475569', marginTop: '14px', textAlign: 'center' }}>Tap a pitcher to open their charts.</div>
     </div>
   )
 }
